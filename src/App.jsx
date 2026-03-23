@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc, addDoc } from "firebase/firestore";
+import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc, addDoc, query, orderBy, serverTimestamp } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyBWUmkehUlQ70w3h219Dg92eeHdDjfWMMQ",
@@ -109,6 +109,18 @@ export default function App() {
   const [tempNotes, setTempNotes] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
+  const [currentUser, setCurrentUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("ha_current_user")) || null; } catch { return null; }
+  });
+  const [showUserPicker, setShowUserPicker] = useState(false);
+  const [msgTab, setMsgTab] = useState("group");
+  const [dmTarget, setDmTarget] = useState(null);
+  const [groupMessages, setGroupMessages] = useCollection("groupMessages");
+  const [directMessages, setDirectMessages] = useCollection("directMessages");
+  const [msgInput, setMsgInput] = useState("");
+  const [msgLoading, setMsgLoading] = useState(false);
+  const msgEndRef = useRef(null);
+
   const [chatMessages, setChatMessages] = useState([
     { role: "assistant", content: "Hi! I'm your Horsing Around AI assistant 🐴 I can suggest lesson plans, summarize rider progress, auto-generate lesson notes, or answer any questions about horses and riding. What can I help you with?" }
   ]);
@@ -227,6 +239,59 @@ export default function App() {
     const reply = await callClaude([{ role: "user", content: userMsg }], "You are an expert equestrian instructor. Provide structured, practical lesson plans.");
     setChatMessages([...newMessages, { role: "assistant", content: reply }]); setChatLoading(false);
   };
+
+  // ── Messaging ──
+  useEffect(() => { msgEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [groupMessages, directMessages, dmTarget]);
+
+  const selectUser = (user) => {
+    localStorage.setItem("ha_current_user", JSON.stringify(user));
+    setCurrentUser(user);
+    setShowUserPicker(false);
+  };
+
+  const getDmMessages = () => {
+    if (!currentUser || !dmTarget) return [];
+    return directMessages.filter(m =>
+      (m.senderId === currentUser.id && m.receiverId === dmTarget.id) ||
+      (m.senderId === dmTarget.id && m.receiverId === currentUser.id)
+    ).sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
+  };
+
+  const getAllUsers = () => {
+    const riderUsers = riders.map(r => ({ id: `rider_${r.id}`, name: r.name, role: "Rider" }));
+    const instructorUsers = instructors.map(i => ({ id: `inst_${i.id}`, name: i.name, role: "Instructor" }));
+    const parentUsers = riders.filter(r => r.parentName).map(r => ({ id: `parent_${r.id}`, name: r.parentName, role: "Parent" }));
+    return [...instructorUsers, ...riderUsers, ...parentUsers];
+  };
+
+  const sendMessage = async (isGroup = true) => {
+    if (!msgInput.trim() || !currentUser) return;
+    setMsgLoading(true);
+    const msgData = {
+      text: msgInput.trim(),
+      senderId: currentUser.id,
+      senderName: currentUser.name,
+      senderRole: currentUser.role,
+      createdAt: serverTimestamp(),
+      type: "text",
+    };
+    if (isGroup) {
+      await addDoc(collection(db, "groupMessages"), msgData);
+    } else {
+      await addDoc(collection(db, "directMessages"), { ...msgData, receiverId: dmTarget.id, receiverName: dmTarget.name });
+    }
+    setMsgInput("");
+    setMsgLoading(false);
+  };
+
+
+
+  const getUnreadCount = (targetUser) => {
+    if (!currentUser) return 0;
+    return directMessages.filter(m => m.senderId === targetUser.id && m.receiverId === currentUser.id && !m.read).length;
+  };
+
+  const roleColor = (role) => ({ "Instructor": "#4a7c59", "Rider": "#2c6fa8", "Parent": "#9e5a3a", "Admin": "#a0784a" }[role] || "#888");
 
   const editFields = () => {
     const type = editTarget?.type;
